@@ -8,6 +8,10 @@ def rosenbrock(x):
     return -(((1 - x[0]) ** 2) + 100 * ((x[1] - x[0] ** 2) ** 2))
 
 
+def sphere(x):
+    return -(x[0] ** 2 + x[1] ** 2)
+
+
 class CMA:
     def __init__(self, func, options=None, ):
         self.params = {"bounds": np.array([[0, 0], [1, 1]]),
@@ -16,10 +20,10 @@ class CMA:
                        "mu": 2,
                        "c_m": 1,
                        "c_1": 0.6,
-                       "c_c": 0.6,
-                       "c_mu": 0.2,
+                       "c_c": 1,
+                       "c_mu": 0.3,
                        "mu_eff": 5.5,
-                       "sigma": 0.3}
+                       "sigma": 1}
 
         self.func = func
         self.offspring = np.array([])
@@ -32,19 +36,22 @@ class CMA:
                 self.params[k] = v
 
         self.x = None
-        self.m = np.array([[0], [0]])
-        self.m_ = np.array([[0], [0]])
-        self.p_c = np.array([[0], [0]])
+        self.m = np.array([[-1], [0]])
+        self.m_ = self.m
+        self.p_c = self.m
+
+        self.old_angle = 0
 
     def multi_gaussian(self, num_samples=1):
         v, L = np.linalg.eig(self.C)
-        u = np.random.normal(0, 1, (np.size(L, axis=0), 1))
-        X = self.m + self.params["sigma"] * np.dot(L, u)
+        v = np.eye(np.size(L, axis=0)) * v
+        u = np.random.normal(0, (np.size(L, axis=0), 1))
+        X = self.m + self.params["sigma"] * np.dot(L, np.dot(v, u))
         Y = self.func(X)
 
         for i in range(num_samples - 1):
             u = np.random.normal(0, 1, (np.size(L, axis=0), 1))
-            x = self.m + self.params["sigma"] + np.dot(L, u)
+            x = self.m + self.params["sigma"] * np.dot(L, np.dot(v, u))
             y = self.func(x)
             X = np.hstack((X, x))
             Y = np.hstack((Y, y))
@@ -64,8 +71,8 @@ class CMA:
     def update_mean(self):
         self.m_ = self.m
         self.m = self.m + (
-            1 / self.params['mu'] * np.reshape(np.sum(self.parents, axis=1),
-                                               [2, 1]) - self.m)
+        1 / self.params['mu'] * np.reshape(np.sum(self.parents, axis=1),
+                                           [2, 1]) - self.m)
 
     def rank_mu_update(self):
         y = (self.parents - self.m) / self.params['sigma']
@@ -84,7 +91,7 @@ class CMA:
         self.p_c = (1 - c_c) + math.sqrt(c_c * (2 - c_c) * mu_eff) * (
             self.m - self.m_) / sig
 
-        C = (1 - self.params['c_1']) * self.C + self.params['c_1'] * np.dot(
+        C = self.params['c_1'] * np.dot(
             self.p_c, self.p_c.T)
 
         return C
@@ -92,6 +99,33 @@ class CMA:
     def update_cov(self):
         self.C = (1 - self.params['c_1'] - self.params['c_mu']) * self.C + \
                  self.rank_one_update() + self.rank_mu_update()
+
+    def create_2d_ellipse(self):
+        U, V = np.linalg.eig(self.C)
+        width_vec = V[0, :]
+        height_vec = V[1, :]
+
+        width = np.sqrt(np.sum(width_vec ** 2))
+        height = np.sqrt(np.sum(height_vec ** 2))
+
+        sin_ = np.abs(width_vec[1]) / np.abs(width)
+        angle = (np.arcsin(sin_) * 360) / (2 * np.pi)
+
+        if width_vec[1] >= 0:
+            if width_vec[0] < 0:
+                angle = -(90 + (90 - angle))
+            else:
+                angle = -angle
+        else:
+            if width_vec[0] < 0:
+                angle = -(180 + angle)
+            else:
+                angle = angle
+
+        width = width * 2 * np.sqrt(5.991 * U[0])
+        height = height * 2 * np.sqrt(5.991 * U[1])
+
+        return width, height, angle
 
     def plot_2d(self, m, K, first=0):
         x, y = np.mgrid[-3:3.01:.01, -3:3.01:.01]
@@ -106,30 +140,18 @@ class CMA:
         ax.set_xlim(-3, 3)
         ax.set_ylim(-3, 3)
         if first != 0:
-            plt.arrow(cma.m_[0, 0], cma.m_[1, 0], cma.m[0, 0] - cma.m_[0, 0],
-                      cma.m[1, 0] - cma.m_[1, 0], length_includes_head=True,
+            plt.arrow(self.m_[0, 0], self.m_[1, 0],
+                      self.m[0, 0] - self.m_[0, 0],
+                      self.m[1, 0] - self.m_[1, 0], length_includes_head=True,
                       lw=1,
-                      head_width=0.05)
-        ax2.contour(x, y, rv.pdf(pos), cmap=plt.cm.OrRd)
+                      head_width=0.1)
+        ax2.contour(x, y, rv.pdf(pos), cmap=plt.cm.gray)
         plt.scatter(1, 1, marker="x", color="red", s=200, lw=2)
         plt.scatter(self.m_[0, 0], self.m_[1, 0], marker="+", color="black",
                     s=100, lw=2)
         plt.axhline(0, color="black", alpha=0.8, ls="--")
         plt.axvline(0, color="black", alpha=0.8, ls="--")
         plt.scatter(self.offspring[0, :], self.offspring[1, :], s=5)
-        plt.savefig("cma_" + str(first))
-
-
-options = {"bounds": [[1, 1], [3, 3]], "mu": 6}
-cma = CMA(func=rosenbrock, options=options)
-
-C = np.eye(2, 2)
-cma.multi_gaussian(20)
-cma.plot_2d(cma.m, cma.C)
-
-for i in range(3):
-    cma.choose_parents()
-    cma.update_mean()
-    cma.update_cov()
-    cma.multi_gaussian(20)
-    cma.plot_2d(cma.m, cma.C, first=i + 1)
+        ax.text(3, -3, 'Iteration: ' + str(first), verticalalignment="bottom",
+                horizontalalignment='right', fontsize=20, color='green')
+        plt.show()
